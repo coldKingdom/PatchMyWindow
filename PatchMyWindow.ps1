@@ -54,6 +54,8 @@ try {
         Languages = (New-Object 'Collections.ObjectModel.ObservableCollection[object]')
     }
     $script:target = 'Windows'
+    $script:appQueue = New-Object 'Collections.ObjectModel.ObservableCollection[object]'
+    $ui.AppQueueGrid.ItemsSource = $appQueue
     $script:queue = $queues.Windows
     $ui.PackageGrid.ItemsSource = $queue
     $script:session = $null
@@ -103,7 +105,10 @@ try {
         $ui.AddPackages.IsEnabled = $editable
         $ui.ReapplyCU.IsEnabled = $editable -and $mounted
         $ui.ProvisionLXP.IsEnabled = $editable -and $mounted
+        $ui.AppLicenseMode.IsEnabled = $editable
         $ui.ProvisionApp.IsEnabled = $editable -and $mounted
+        $ui.RunAppQueue.IsEnabled = $editable -and $mounted -and @($appQueue | Where-Object { $_.Status -ne 'Klart' }).Count -gt 0
+        $ui.RemoveQueuedApp.IsEnabled = $editable -and $appQueue.Count -gt 0
         $ui.ListApps.IsEnabled = $editable -and $mounted
         $ui.PackageTarget.IsEnabled = $idle
         $selected = $ui.PackageGrid.SelectedIndex
@@ -157,6 +162,10 @@ try {
         $script:status = $Result.Status
         $script:winReStatus = $Result.WinReStatus
         if ($script:session) {
+            if ($Result.Action -in @('Inspect', 'Prepare', 'ProvisionAppBatch')) {
+                $appQueue.Clear()
+                foreach ($row in @($script:session.AppQueue)) { $appQueue.Add($row) }
+            }
             if ($Result.Action -in @('Inspect', 'Prepare', 'Save')) {
                 $ui.CleanupMode.SelectedIndex = [array]::IndexOf(@('None', 'Standard', 'ResetBase'), $script:session.Finalization.CleanupMode)
                 $ui.OptimizeWim.IsChecked = $script:session.Finalization.Optimize
@@ -225,7 +234,7 @@ try {
                 'Discard' { 'Avslutar sessionen …' }
                 default { 'Kontrollerar sessionen …' }
             }
-            $ui.StopQueue.Visibility = if ($Action -in @('Apply', 'ApplySafeOS', 'ApplyLP', 'ReapplyCU')) { 'Visible' } else { 'Collapsed' }
+            $ui.StopQueue.Visibility = if ($Action -in @('Apply', 'ApplySafeOS', 'ApplyLP', 'ReapplyCU', 'ProvisionAppBatch')) { 'Visible' } else { 'Collapsed' }
             $ui.StopQueue.IsEnabled = $true
             Update-Ui
         } catch { $ps.Dispose(); Show-Error $_.Exception.Message }
@@ -255,7 +264,7 @@ try {
                     $ui.AppsGrid.ItemsSource = @($result.Apps)
                     $ui.AppsHint.Text = '{0} provisionerade paket · läst {1:HH:mm:ss}' -f $result.Apps.Count, (Get-Date)
                 }
-                if ($finished.Action -in @('Prepare', 'ProvisionApp', 'ProvisionLXP', 'Discard')) {
+                if ($finished.Action -in @('Prepare', 'ProvisionApp', 'ProvisionAppBatch', 'ProvisionLXP', 'Discard')) {
                     $ui.AppsGrid.ItemsSource = $null
                     $ui.AppsHint.Text = 'Läs appar och versioner för aktuell status.'
                 }
@@ -307,6 +316,7 @@ try {
                 New-Item -ItemType Directory -Path (Split-Path $settingsPath -Parent) -Force | Out-Null
                 @{ WorkRoot = $script:root } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath -Encoding UTF8
                 $queues.Windows.Clear(); $queues.WinRE.Clear(); $queues.Languages.Clear()
+                $appQueue.Clear()
                 $ui.AppsGrid.ItemsSource = $null
                 $ui.AppsHint.Text = 'Applistan har inte lästs för den valda arbetsmappen.'
                 Start-Task 'Inspect'
@@ -364,27 +374,50 @@ try {
         $packageDialog = New-Object Microsoft.Win32.OpenFileDialog
         $packageDialog.Title = "Välj kompatibelt $label-paket"
         $packageDialog.Filter = 'APPX/MSIX-paket|*.appx;*.appxbundle;*.msix;*.msixbundle'
+        $packageDialog.Multiselect = -not $IsLanguage
         if (-not $packageDialog.ShowDialog($window)) { return }
+        $skipLicense = $ui.AppLicenseMode.SelectedIndex -eq 1
+        foreach ($packageFile in $packageDialog.FileNames) {
         $licenseDialog = New-Object Microsoft.Win32.OpenFileDialog
-        $licenseDialog.Title = "Välj XML-licensen för $label-paketet"
+        $licenseDialog.Title = "Välj XML-licensen för $([IO.Path]::GetFileName($packageFile))"
         $licenseDialog.Filter = 'XML-licens|*.xml'
-        if (-not $licenseDialog.ShowDialog($window)) { return }
+        if (-not $skipLicense -and -not $licenseDialog.ShowDialog($window)) { return }
         $dependencyDialog = New-Object Microsoft.Win32.OpenFileDialog
-        $dependencyDialog.Title = 'Välj beroendepaket, eller Avbryt om inga behövs'
+        $dependencyDialog.Title = "Beroenden för $([IO.Path]::GetFileName($packageFile)) — Avbryt om inga behövs"
         $dependencyDialog.Filter = $packageDialog.Filter
         $dependencyDialog.Multiselect = $true
         $dependencies = @()
         if ($dependencyDialog.ShowDialog($window)) { $dependencies = @($dependencyDialog.FileNames) }
+        if (-not $IsLanguage) {
+            $existing = @($appQueue | Where-Object { $_.Path -eq $packageFile })
+            foreach ($row in $existing) { [void]$appQueue.Remove($row) }
+            $appQueue.Add([pscustomobject]@{ Path = $packageFile; LicensePath = $licenseDialog.FileName; SkipLicense = $skipLicense; Dependencies = $dependencies; Status = 'Väntar' })
+            Update-Ui
+            continue
+        }
         $message = "Provisionera $label i den monterade Windows-imagen?`n`nPaket: $($packageDialog.FileName)`nLicens: $($licenseDialog.FileName)`nBeroenden: $($dependencies -join ', ')`n`nPaketet måste stödja målversionen."
         if ($IsLanguage) { $message += ' CU behöver återappliceras efteråt.' }
+        if ($skipLicense) { $message += "`n`nSkipLicense är valt: paketet ska inte kräva någon licens. Endast Enterprise/Server stöds för detta val." }
         $action = if ($IsLanguage) { 'ProvisionLXP' } else { 'ProvisionApp' }
-        if (Confirm-Action $message) { Start-Task $action @{ PackagePath = $packageDialog.FileName; LicensePath = $licenseDialog.FileName; Dependencies = $dependencies } }
+        if (Confirm-Action $message) {
+            Start-Task $action @{ PackagePath = $packageDialog.FileName; LicensePath = $licenseDialog.FileName; SkipLicense = $skipLicense; Dependencies = $dependencies }
+            $ui.AppLicenseMode.SelectedIndex = 0
+        }
+        }
+        $ui.AppLicenseMode.SelectedIndex = 0
     }
     $ui.ProvisionLXP.Add_Click({ Show-ProvisionDialog $true })
     $ui.ProvisionApp.Add_Click({ Show-ProvisionDialog $false })
     $ui.ListApps.Add_Click({ Start-Task 'ListApps' })
+    $ui.RemoveQueuedApp.Add_Click({ if ($ui.AppQueueGrid.SelectedItem) { [void]$appQueue.Remove($ui.AppQueueGrid.SelectedItem) }; Update-Ui })
+    $ui.RunAppQueue.Add_Click({
+        if (Confirm-Action "Provisionera appkön i visad ordning?`n`n$($appQueue.Count) rader. Klara appar hoppas över. Kön stannar vid första fel. Granska licensval och beroenden innan körning.") {
+            Start-Task 'ProvisionAppBatch' @{ Items = @($appQueue) }
+        }
+    })
     $ui.Save.Add_Click({
         $pending = @(@($queues.Windows) + @($queues.WinRE) + @($queues.Languages) | Where-Object { $_.Status -ne 'Klart' }).Count
+        $pending += @($appQueue | Where-Object { $_.Status -ne 'Klart' }).Count
         $message = "Spara ändringarna och avmontera imagen?`n`n$($script:session.Output)"
         $mode = @('None', 'Standard', 'ResetBase')[$ui.CleanupMode.SelectedIndex]
         if ($script:status -eq 'NeedsFinalize') { $message = "Slutföra den redan sparade imagen?`n`n$($script:session.Output)" }
@@ -425,10 +458,13 @@ try {
         if ($ui.CleanupMode.SelectedIndex -ne 1 -or -not $ui.OptimizeWim.IsChecked -or $ui.CleanupMode.IsEnabled) { throw 'Fel standardinställningar för avslutning.' }
         $script:readOnly = $false
         $script:status = 'Mounted'
+        $appQueue.Add([pscustomobject]@{ Path = 'fixture.appx'; LicensePath = 'license.xml'; SkipLicense = $false; Dependencies = @(); Status = 'Väntar' })
         $queue.Add([pscustomobject]@{ Path = 'fixture.msu'; Name = 'fixture.msu'; Size = '1 MB'; Status = 'Väntar' })
         Update-Ui
+        if (-not $ui.RunAppQueue.IsEnabled -or -not $ui.RemoveQueuedApp.IsEnabled) { throw 'Appkön kan inte köras eller redigeras för monterad image.' }
         if (-not $ui.Apply.IsEnabled -or -not $ui.Save.IsEnabled -or $ui.BrowseSource.IsEnabled) { throw 'Felaktiga åtgärder för monterad image.' }
         $script:busy = $true; Update-Ui
+        if ($ui.RunAppQueue.IsEnabled -or $ui.RemoveQueuedApp.IsEnabled -or $ui.ProvisionApp.IsEnabled) { throw 'Appkön kan ändras under körning.' }
         if ($ui.Apply.IsEnabled -or $ui.Save.IsEnabled -or $ui.Discard.IsEnabled -or $ui.AddPackages.IsEnabled) { throw 'Ändringar tillåts under pågående körning.' }
         if ($ui.PackageTarget.IsEnabled) { throw 'Målbyte tillåts under pågående körning.' }
         if ($ui.CleanupMode.IsEnabled -or $ui.OptimizeWim.IsEnabled) { throw 'Avslutningsinställningar kan ändras under körning.' }
@@ -450,6 +486,7 @@ try {
         $script:status = 'NeedsFinalize'; Update-Ui
         if (-not $ui.Save.IsEnabled -or $ui.Discard.IsEnabled -or $ui.CleanupMode.IsEnabled -or -not $ui.OptimizeWim.IsEnabled) { throw 'Felaktiga åtgärder vid avbruten kompaktering.' }
         $ui.CleanupMode.SelectedIndex = 1
+        $appQueue.Clear()
         $script:status = 'Empty'; $script:readOnly = $true; $queues.Windows.Clear(); $queues.WinRE.Clear(); Update-Ui
         $window.Show()
         $window.UpdateLayout()

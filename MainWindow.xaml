@@ -102,12 +102,22 @@
                 <TextBlock x:Name="WinReStateText" Grid.Column="1" Text="WinRE · Inte påbörjad" Style="{StaticResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="12,0,0,0"/>
               </Grid>
               <TextBlock x:Name="TargetHint" Text="Lägg checkpoint- och förkravspaket före uppdateringen som behöver dem. Ordningen nedan används vid installation." Style="{StaticResource Muted}" FontSize="12" Margin="0,3,0,10"/>
-              <TextBlock Text="Språk: installera LP/LIP och provisionera LXP före sista CU-körningen. LXP kräver kompatibelt APPX/MSIX-paket, XML-licens och eventuella beroenden. Språkfunktioner/FOD hanteras separat." Style="{StaticResource Muted}" FontSize="12" Margin="0,0,0,10"/>
+              <TextBlock Text="Språk: installera LP/LIP och provisionera LXP före sista CU-körningen. LXP kräver kompatibelt APPX/MSIX-paket, rätt licensval och eventuella beroenden. Språkfunktioner/FOD hanteras separat." Style="{StaticResource Muted}" FontSize="12" Margin="0,0,0,10"/>
+              <TextBlock Text="Licensval för nästa LXP- eller app-provisionering" Style="{StaticResource Label}"/>
+              <ComboBox x:Name="AppLicenseMode" SelectedIndex="0" Margin="0,0,0,6">
+                <ComboBoxItem Content="Använd XML-licens (standard)"/>
+                <ComboBoxItem Content="SkipLicense · paketet kräver ingen licens"/>
+              </ComboBox>
+              <TextBlock Text="SkipLicense får endast användas för paket som inte kräver licens på Enterprise/Server. Verktyget kontrollerar utgåvan; du ansvarar för paketets licenskrav. CAB-baserade LP påverkas inte." Style="{StaticResource Muted}" FontSize="12" Margin="0,0,0,8"/>
               <Button x:Name="ProvisionLXP" Content="Provisionera LXP (APPX/MSIX)…" HorizontalAlignment="Left" Margin="0,0,0,10"/>
               <Expander Header="Inbox-appar · provisionerade APPX/MSIX-paket" Margin="0,0,0,12">
                 <StackPanel Margin="0,10,0,0">
                   <TextBlock Text="Läs versionerna i imagen och välj ett kompatibelt nyare apppaket med licens och beroenden. Paketen hämtas separat. LXP hanteras med språkknappen ovan." Style="{StaticResource Muted}" Margin="0,0,0,8"/>
-                  <StackPanel Orientation="Horizontal"><Button x:Name="ListApps" Content="Läs appar och versioner" Margin="0,0,10,8"/><Button x:Name="ProvisionApp" Content="Uppdatera / provisionera app…" Margin="0,0,0,8"/></StackPanel>
+                  <StackPanel Orientation="Horizontal"><Button x:Name="ListApps" Content="Läs appar och versioner" Margin="0,0,10,8"/><Button x:Name="ProvisionApp" Content="Lägg till appar i kön…" Margin="0,0,0,8"/></StackPanel>
+                  <DataGrid x:Name="AppQueueGrid" Height="130" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserSortColumns="False" SelectionMode="Single" HeadersVisibility="Column">
+                    <DataGrid.Columns><DataGridTextColumn Header="PAKET" Binding="{Binding Path}" Width="*"/><DataGridTextColumn Header="LICENS" Binding="{Binding LicensePath}" Width="150"/><DataGridCheckBoxColumn Header="SKIP LICENSE" Binding="{Binding SkipLicense}" Width="95"/><DataGridTextColumn Header="STATUS" Binding="{Binding Status}" Width="95"/></DataGrid.Columns>
+                  </DataGrid>
+                  <StackPanel Orientation="Horizontal" Margin="0,8,0,10"><Button x:Name="RunAppQueue" Content="Provisionera appkön" Margin="0,0,8,0"/><Button x:Name="RemoveQueuedApp" Content="Ta bort vald rad"/></StackPanel>
                   <DataGrid x:Name="AppsGrid" Height="150" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column">
                     <DataGrid.Columns><DataGridTextColumn Header="APP" Binding="{Binding DisplayName}" Width="*" MinWidth="250"/><DataGridTextColumn Header="VERSION" Binding="{Binding Version}" Width="150"/><DataGridTextColumn Header="ARKITEKTUR" Binding="{Binding Architecture}" Width="120"/></DataGrid.Columns>
                   </DataGrid>

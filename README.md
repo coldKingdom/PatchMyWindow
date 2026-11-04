@@ -46,7 +46,7 @@ Efter varje påbörjad språkändring krävs **Återapplicera CU efter språkän
 
 Språkfunktioner/FOD såsom Basic, OCR och tal samt automatisk konfigurering av standardspråk ingår ännu inte i detta språkflöde. Hantera nödvändiga FOD från matchande media innan sista CU-körningen. WinRE-språkpaket hanteras separat i WinRE-kön.
 
-**LXP:** välj **Provisionera LXP (APPX/MSIX)…**, välj huvudpaketet, dess XML-licens och eventuella beroendepaket. Avbryt beroendevalet om inga behövs. Efter granskning körs `Add-AppxProvisionedPackage -Path <monterad Windows-image> -PackagePath ... -LicensePath ... -Regions all`, med `-DependencyPackagePath` när beroenden valts. Verktyget använder varken `-Online` eller `-SkipLicense`. Status och valda filer journalförs. CU-återapplicering krävs före avslutning även efter denna språkändring. Vid fel lämnas imagen monterad och samma flöde kan köras igen med korrigerade filer.
+**LXP:** välj **Provisionera LXP (APPX/MSIX)…**, välj huvudpaketet, dess XML-licens och eventuella beroendepaket. Avbryt beroendevalet om inga behövs. Efter granskning körs `Add-AppxProvisionedPackage -Path <monterad Windows-image> -PackagePath ... -LicensePath ... -Regions all`, med `-DependencyPackagePath` när beroenden valts. Verktyget använder inte `-Online`. Du kan välja `SkipLicense` enligt licensvalet nedan. Status och valda filer journalförs. CU-återapplicering krävs före avslutning även efter denna språkändring. Vid fel lämnas imagen monterad och samma flöde kan köras igen med korrigerade filer.
 
 Cmdleten provisionerar paket för användare i mål-Windows; den byter inte automatiskt visningsspråk. Paket, licens, beroenden och basspråk måste passa målversionen. Verktyget verifierar filernas existens och format, men identifierar inte automatiskt att ett APPX/MSIX-paket är ett LXP. Testa er specifika paketkombination i en VM. Generellt stöd för APPX-provisionering innebär inte att alla LXP-versioner stöds för Windows 11-imaging. [Add-AppxProvisionedPackage](https://learn.microsoft.com/powershell/module/dism/add-appxprovisionedpackage).
 
@@ -54,11 +54,21 @@ Microsoft dokumenterar CAB-baserade LP/LIP för Windows 11-imaging och APPX-base
 
 ## Uppdatera inbox-appar
 
+### Licensval för LXP och inbox-appar
+
+Välj licensläge före provisioneringen: **Använd XML-licens** (standard) eller **SkipLicense · paketet kräver ingen licens**. Med SkipLicense visas ingen licensfildialog och endast `-SkipLicense` skickas till DISM. Kombinationen SkipLicense och LicensePath avvisas. Valet visas i bekräftelsen och journalförs; gränssnittet återgår till XML-standard efter att en körning startats. Saknad licensfil eller ett licensfel aktiverar aldrig SkipLicense automatiskt.
+
+Microsoft begränsar SkipLicense till paket som inte kräver licens på Enterprise-/Server-utgåvor. Verktyget kontrollerar den monterade imagens utgåva med `Get-WindowsEdition -Path`; du måste kontrollera paketets licenskrav. CAB-baserade LP/LIP använder Add-WindowsPackage och berörs inte. [Microsofts parameterbeskrivning](https://learn.microsoft.com/powershell/module/dism/add-appxprovisionedpackage#-skiplicense).
+
 Öppna **Inbox-appar · provisionerade APPX/MSIX-paket** och klicka **Läs appar och versioner**. Listan kommer från `Get-AppxProvisionedPackage -Path` och visar namn, version och arkitektur för provisionerade paket i den monterade Windows-imagen.
 
-Välj **Uppdatera / provisionera app…**, välj det kompatibla nyare huvudpaketet, dess XML-licens och eventuella beroenden. Samma offline-API som för LXP används: `Add-AppxProvisionedPackage -Path`, med `LicensePath`, valfria `DependencyPackagePath` och `Regions all`. Inga gamla paket avinstalleras automatiskt. DISM avgör om paketet kan provisioneras. Läs applistan igen efter körningen för att granska versionerna.
+Välj **Lägg till appar i kön…** och markera flera kompatibla huvudpaket samtidigt med Ctrl eller Shift (APPX, MSIX eller bundle). För varje app väljer du separat XML-licens och eventuella beroenden. Det valda licensläget gäller alla appar i just det flerfilvalet; lägg till fler appar i en separat omgång om de behöver ett annat licensläge. Licensläget återgår till XML efter att apparna lagts till.
 
-Appfiler hämtas separat från en betrodd distributionskälla. Automatisk sökning/nedladdning av uppdateringar, EXE/MSI-installationer och appar som inte är provisionerade APPX/MSIX-paket ingår inte. Detta flöde kräver XML-licens; `SkipLicense` används inte. Paketets identitet, målversion, arkitektur och beroenden måste stämma. Prova den färdiga imagen i en VM, inklusive första inloggning.
+Granska raderna och klicka **Provisionera appkön**. Du kan ta bort en vald rad före körningen; lägg till samma paket igen för att ersätta dess inställningar. Appar installeras en i taget i köordning. Stoppknappen stoppar mellan appar, och kön stannar vid första felet. När kön startas sparas raderna och deras status i sessionen. Vid återförsök hoppas färdiga appar med oförändrade filval över. Rader som bara lagts till i gränssnittet sparas först när kön startas.
+
+Samma offline-API som för LXP används: `Add-AppxProvisionedPackage -Path`, med `LicensePath` eller explicit `SkipLicense`, valfria `DependencyPackagePath` och `Regions all`. Inga gamla paket avinstalleras automatiskt. DISM avgör om paketet kan provisioneras. Läs applistan igen efter körningen för att granska versionerna.
+
+Appfiler hämtas separat från en betrodd distributionskälla. Automatisk sökning/nedladdning av uppdateringar, EXE/MSI-installationer och appar som inte är provisionerade APPX/MSIX-paket ingår inte. XML-licens är standard; SkipLicense kan väljas för paket som inte kräver licens enligt nedan. Paketets identitet, målversion, arkitektur och beroenden måste stämma. Prova den färdiga imagen i en VM, inklusive första inloggning.
 
 Appåtgärder journalförs separat från LXP och ändrar inte språkens CU-krav. En vanlig appuppdatering utlöser inte CU-återapplicering och kan inte heller rensa ett redan befintligt språkkrav. LXP ska därför alltid installeras via LXP-knappen. Vid fel behålls imagen monterad; rätta filvalet och kör igen. Appändringarna blir permanenta i WIM-filen först vid **Spara och avmontera**.
 

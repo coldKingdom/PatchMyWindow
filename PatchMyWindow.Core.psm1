@@ -72,14 +72,15 @@ function Initialize-PmwWinRe($Session) {
     }
     if (-not $Session.PSObject.Properties['LXP']) { $Session | Add-Member -NotePropertyName LXP -NotePropertyValue @() }
     if (-not $Session.PSObject.Properties['Apps']) { $Session | Add-Member -NotePropertyName Apps -NotePropertyValue @() }
-    $Session.Schema = 6
+    if (-not $Session.PSObject.Properties['AppQueue']) { $Session | Add-Member -NotePropertyName AppQueue -NotePropertyValue @() }
+    $Session.Schema = 7
 }
 
 function Read-PmwSession([string]$Root) {
     $path = Join-Path $Root 'active-session.json'
     if (-not (Test-Path -LiteralPath $path)) { return $null }
     $s = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($s.Schema -notin @(1, 2, 3, 4, 5, 6) -or $s.Id -notmatch '^[a-f0-9]{32}$') { throw 'Sessionsfilen har ett okänt format.' }
+    if ($s.Schema -notin @(1, 2, 3, 4, 5, 6, 7) -or $s.Id -notmatch '^[a-f0-9]{32}$') { throw 'Sessionsfilen har ett okänt format.' }
     if ($s.Schema -ge 2 -and -not $s.PSObject.Properties['WinRE']) { throw 'Sessionsfilen saknar WinRE-information.' }
     if ($s.Schema -eq 3 -and -not $s.PSObject.Properties['Finalization']) { throw 'Sessionsfilen saknar avslutningsinformation.' }
     $base = Join-Path (Join-Path $Root 'Sessions') $s.Id
@@ -388,6 +389,29 @@ function Invoke-PmwTask {
                 }
                 Write-PmwLog $s $Events 'Paketkörningen är avslutad. Granska loggen och spara sedan imagen.'
             }
+            'ProvisionAppBatch' {
+                Assert-PmwMounted $s
+                if (@($Request.Items).Count -eq 0) { throw 'Appkön är tom.' }
+                $previousQueue = @($s.AppQueue)
+                $s.AppQueue = @($Request.Items | ForEach-Object {
+                    $item = $_
+                    $old = $previousQueue | Where-Object { $_.Path -eq $item.Path -and $_.Status -eq 'Klart' -and $_.LicensePath -eq $item.LicensePath -and $_.SkipLicense -eq $item.SkipLicense -and ($_.Dependencies -join '|') -eq ($item.Dependencies -join '|') } | Select-Object -First 1
+                    [pscustomobject]@{ Path = $item.Path; LicensePath = $item.LicensePath; SkipLicense = [bool]$item.SkipLicense; Dependencies = @($item.Dependencies); Status = $(if ($old) { 'Klart' } else { 'Väntar' }) }
+                })
+                Save-PmwSession $s $root
+                for ($i = 0; $i -lt $s.AppQueue.Count; $i++) {
+                    if ($Control -and $Control.Cancel) { Write-PmwLog $s $Events 'Appkön stoppades mellan två appar.'; break }
+                    $item = $s.AppQueue[$i]
+                    if ($item.Status -eq 'Klart') { continue }
+                    $item.Status = 'Installerar'; Save-PmwSession $s $root
+                    Write-PmwLog $s $Events ('App {0}/{1}: {2}' -f ($i + 1), $s.AppQueue.Count, $item.Path)
+                    $child = Invoke-PmwTask @{ Action = 'ProvisionApp'; Root = $root; PackagePath = $item.Path; LicensePath = $item.LicensePath; SkipLicense = $item.SkipLicense; Dependencies = @($item.Dependencies) } $Events $Control
+                    $s = $child.Session
+                    $s.AppQueue[$i].Status = if ($child.Success) { 'Klart' } else { 'Fel' }
+                    Save-PmwSession $s $root
+                    if (-not $child.Success) { throw $child.Error }
+                }
+            }
             'ListApps' {
                 Assert-PmwMounted $s
                 $result.Apps = @(Get-AppxProvisionedPackage -Path $s.MountPath -LogPath $s.DismLog -ErrorAction Stop | Select-Object DisplayName, Version, Architecture, PackageName)
@@ -398,20 +422,28 @@ function Invoke-PmwTask {
                 $isLanguage = $Request.Action -eq 'ProvisionLXP'
                 $collection = if ($isLanguage) { 'LXP' } else { 'Apps' }
                 $package = Get-PmwFullPath $Request.PackagePath
-                $license = Get-PmwFullPath $Request.LicensePath
+                $skipLicense = $Request.ContainsKey('SkipLicense') -and $Request.SkipLicense -eq $true
+                $license = ''
+                if ($skipLicense) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$Request.LicensePath)) { throw 'Välj antingen XML-licens eller SkipLicense, inte båda.' }
+                    $edition = Get-WindowsEdition -Path $s.MountPath -ErrorAction Stop
+                    if ([string]$edition.Edition -notmatch 'Enterprise|Server') { throw 'SkipLicense stöds här endast för licensfria paket på Enterprise-/Server-imager enligt Microsofts dokumentation.' }
+                } else { $license = Get-PmwFullPath $Request.LicensePath }
                 $dependencies = @($Request.Dependencies)
                 foreach ($file in @($package) + $dependencies) {
                     if ([IO.Path]::GetExtension($file) -notin @('.appx', '.appxbundle', '.msix', '.msixbundle') -or -not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Ogiltigt eller saknat APPX/MSIX-paket: $file" }
                 }
-                if ([IO.Path]::GetExtension($license) -ne '.xml' -or -not (Test-Path -LiteralPath $license -PathType Leaf)) { throw 'Välj paketets befintliga XML-licensfil.' }
-                $entry = [pscustomobject]@{ Path = $package; LicensePath = $license; Dependencies = $dependencies; Status = 'Installerar' }
+                if (-not $skipLicense -and ([IO.Path]::GetExtension($license) -ne '.xml' -or -not (Test-Path -LiteralPath $license -PathType Leaf))) { throw 'Välj paketets befintliga XML-licensfil.' }
+                $entry = [pscustomobject]@{ Path = $package; LicensePath = $license; SkipLicense = $skipLicense; Dependencies = $dependencies; Status = 'Installerar' }
                 $s.$collection = @($s.$collection | Where-Object { $_.Path -ne $package }) + @($entry)
                 if ($isLanguage) { $s.Languages.RequiresCU = $true }
                 $s.Finalization.WindowsCleanup = 'NotRun'
                 Save-PmwSession $s $root
                 Write-PmwLog $s $Events ("Provisionerar $collection i Windows-imagen: $package")
+                Write-PmwLog $s $Events ("Licensval: SkipLicense=$skipLicense; LicensePath=$license")
                 try {
-                    $parameters = @{ Path = $s.MountPath; PackagePath = $package; LicensePath = $license; Regions = 'all'; LogPath = $s.DismLog; ScratchDirectory = $s.ScratchPath; ErrorAction = 'Stop' }
+                    $parameters = @{ Path = $s.MountPath; PackagePath = $package; Regions = 'all'; LogPath = $s.DismLog; ScratchDirectory = $s.ScratchPath; ErrorAction = 'Stop' }
+                    if ($skipLicense) { $parameters.SkipLicense = $true } else { $parameters.LicensePath = $license }
                     if ($dependencies.Count -gt 0) { $parameters.DependencyPackagePath = $dependencies }
                     Add-AppxProvisionedPackage @parameters | Out-Null
                     $entry.Status = 'Klart'

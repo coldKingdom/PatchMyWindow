@@ -182,7 +182,7 @@ try {
         $legacy.PSObject.Properties.Remove('WinRE'); $legacy.Schema = 1
         Save-PmwSession $legacy $root
         $r = Invoke-PmwTask @{ Action = 'Inspect'; Root = $root } $events $script:control
-        Assert ($r.Success -and $r.Session.Schema -eq 6 -and $r.WinReStatus -eq 'None') 'Version 1 journals migrate without losing Windows state'
+        Assert ($r.Success -and $r.Session.Schema -eq 7 -and $r.WinReStatus -eq 'None') 'Version 1 journals migrate without losing Windows state'
 
         $safeRoot = Join-Path $TestRoot 'safe-workspace'
         $safeOutput = Join-Path $TestRoot 'safe-result.wim'
@@ -320,12 +320,23 @@ try {
         $r = Invoke-PmwTask @{ Action = 'ReapplyCU'; Root = $lpRoot; Packages = @($p2) } $events $script:control
         Assert ($r.Success -and -not $r.Session.Languages.RequiresCU -and $script:mockCalls.Count -eq ($before + 1)) 'CU is actually reapplied even when already in package history'
         function script:Add-AppxProvisionedPackage {
-            param($Path, $PackagePath, $LicensePath, $DependencyPackagePath, $Regions, $LogPath, $ScratchDirectory, $ErrorAction)
-            if ($Path -ne $script:mockMount.Path -or $Regions -ne 'all' -or -not $LicensePath) { throw 'Incorrect offline provisioning arguments' }
+            param($Path, $PackagePath, $LicensePath, [switch]$SkipLicense, $DependencyPackagePath, $Regions, $LogPath, $ScratchDirectory, $ErrorAction)
+            if ($Path -ne $script:mockMount.Path -or $Regions -ne 'all' -or ([bool]$LicensePath -eq [bool]$SkipLicense)) { throw 'Incorrect offline provisioning arguments' }
+            $script:usedSkipLicense = [bool]$SkipLicense
+            $script:appCalls.Add($PackagePath)
+            if ($PackagePath -eq $script:failAppPath) { throw 'Simulated selected app failure' }
             $script:lxpDependencies = @($DependencyPackagePath)
             if ($script:failApp) { throw 'Simulated app provisioning failure' }
         }
         $script:failApp = $false
+        $script:appCalls = New-Object 'Collections.Generic.List[string]'
+        $script:failAppPath = ''
+        $script:testEdition = 'Enterprise'
+        function script:Get-WindowsEdition {
+            param($Path, $ErrorAction)
+            if ($Path -ne $script:mockMount.Path) { throw 'Wrong edition target' }
+            [pscustomobject]@{ Edition = $script:testEdition }
+        }
         function script:Get-AppxProvisionedPackage {
             param($Path, $LogPath, $ErrorAction)
             if ($Path -ne $script:mockMount.Path) { throw 'Incorrect inventory target' }
@@ -347,6 +358,36 @@ try {
         Assert ($r.Success -and $r.Session.Languages.RequiresCU -and $r.Session.LXP[0].Status -eq 'Klart' -and $script:lxpDependencies[0] -eq $dependency) 'LXP provisioned offline with license and dependencies; CU required'
         $r = Invoke-PmwTask @{ Action = 'ProvisionApp'; Root = $lpRoot; PackagePath = $appx; LicensePath = $license; Dependencies = @() } $events $script:control
         Assert ($r.Success -and $r.Session.Languages.RequiresCU) 'App update cannot clear an existing language CU requirement'
+        foreach ($action in @('ProvisionApp', 'ProvisionLXP')) {
+            $r = Invoke-PmwTask @{ Action = $action; Root = $lpRoot; PackagePath = $appx; LicensePath = ''; SkipLicense = $true; Dependencies = @($dependency) } $events $script:control
+            Assert ($r.Success -and $script:usedSkipLicense) ("$action supports explicit SkipLicense without LicensePath")
+        }
+        Assert ($r.Session.LXP[0].SkipLicense -and $r.Session.LXP[0].LicensePath -eq '') 'SkipLicense choice is persisted'
+        $r = Invoke-PmwTask @{ Action = 'ProvisionApp'; Root = $lpRoot; PackagePath = $appx; LicensePath = $license; SkipLicense = $true; Dependencies = @() } $events $script:control
+        Assert (-not $r.Success) 'Conflicting license modes rejected'
+        $script:testEdition = 'Professional'
+        $r = Invoke-PmwTask @{ Action = 'ProvisionApp'; Root = $lpRoot; PackagePath = $appx; LicensePath = ''; SkipLicense = $true; Dependencies = @() } $events $script:control
+        Assert (-not $r.Success) 'SkipLicense rejects unsupported target edition'
+        $r = Invoke-PmwTask @{ Action = 'ProvisionApp'; Root = $lpRoot; PackagePath = $appx; LicensePath = $license; Dependencies = @() } $events $script:control
+        Assert ($r.Success -and -not $script:usedSkipLicense) 'XML license remains default on subsequent provisioning'
+        $app2 = Join-Path $TestRoot 'second.appx'
+        $app3 = Join-Path $TestRoot 'third.appx'
+        Set-Content -LiteralPath $app2 -Value 'fixture'; Set-Content -LiteralPath $app3 -Value 'fixture'
+        $batch = @($appx, $app2, $app3) | ForEach-Object { [pscustomobject]@{ Path = $_; LicensePath = $license; SkipLicense = $false; Dependencies = @($dependency); Status = 'Väntar' } }
+        $script:failAppPath = $app2
+        $before = $script:appCalls.Count
+        $r = Invoke-PmwTask @{ Action = 'ProvisionAppBatch'; Root = $lpRoot; Items = $batch } $events $script:control
+        Assert (-not $r.Success -and $r.Session.AppQueue[0].Status -eq 'Klart' -and $r.Session.AppQueue[1].Status -eq 'Fel' -and $r.Session.AppQueue[2].Status -eq 'Väntar' -and $script:appCalls.Count -eq ($before + 2)) 'Batch stops at first error and journals remaining apps'
+        $script:failAppPath = ''
+        $before = $script:appCalls.Count
+        $r = Invoke-PmwTask @{ Action = 'ProvisionAppBatch'; Root = $lpRoot; Items = $r.Session.AppQueue } $events $script:control
+        Assert ($r.Success -and @($r.Session.AppQueue | Where-Object { $_.Status -eq 'Klart' }).Count -eq 3 -and $script:appCalls.Count -eq ($before + 2)) 'Batch resumes without provisioning completed apps again'
+        $script:control.Cancel = $true
+        $before = $script:appCalls.Count
+        $batch[0].Dependencies = @()
+        $r = Invoke-PmwTask @{ Action = 'ProvisionAppBatch'; Root = $lpRoot; Items = $batch } $events $script:control
+        Assert ($r.Success -and $script:appCalls.Count -eq $before -and $r.Session.AppQueue[0].Status -eq 'Väntar') 'Batch cancellation stops before next pending app'
+        $script:control.Cancel = $false
         $r = Invoke-PmwTask @{ Action = 'Discard'; Root = $lpRoot } $events $script:control
         $s = Read-PmwSession $root
         $s.MountPath = $TestRoot
