@@ -4,7 +4,7 @@ Ett fristående svenskt WPF-gränssnitt för att uppdatera en offline Windows 11
 
 ## Starta
 
-Dubbelklicka på **Start-PatchMyWindow.cmd** och godkänn administratörsbehörighet i Windows UAC-dialog. Behåll `PatchMyWindow.ps1`, `PatchMyWindow.Core.psm1` och `MainWindow.xaml` i samma mapp som startfilen.
+Dubbelklicka på **Start-PatchMyWindow.cmd** och godkänn administratörsbehörighet i Windows UAC-dialog. Behåll `PatchMyWindow.ps1`, `PatchMyWindow.Core.psm1`, `PatchMyWindow.Media.ps1` och `MainWindow.xaml` i samma mapp som startfilen.
 
 Startfilen väljer 64-bitars Windows PowerShell och STA-läge. ExecutionPolicy Bypass gäller bara den startade processen; datorns permanenta policy ändras inte. En centralt framtvingad policy kan kräva att skripten signeras av organisationen.
 
@@ -23,6 +23,25 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\PatchMyWindow.ps1
 5. **Granska och spara:** kontrollera båda köernas paketstatus och logg samt inställningarna under **Avslutning**. Standardvalen är komponentrensning och WIM-kompaktering. Välj **Spara och avmontera**. WinRE avslutas först, därefter Windows. Vänta på slutstatus och granska eventuella anmärkningar innan resultatet används.
 
 Arbetsmappen och resultatfilen måste ligga på en lokal, fast NTFS-disk. Utrymmeskontrollen reserverar konservativt bildens okomprimerade storlek plus 10 GB på varje använd disk, eller dubbelt detta om arbetsmapp och resultat delar disk. Standardarbetsmapp: `%LOCALAPPDATA%\PatchMyWindow`. Välj **Byt…** för en rymligare disk. Resultatfilen ska ligga utanför arbetsmappen.
+
+## Skapa nytt installationsmedia och ISO
+
+Efter **Spara och avmontera** kan du använda **04 / Bygg installationsmedia och ISO**:
+
+1. Montera original-ISO:n i Utforskaren. Välj dess rotmapp med **Välj originalmedia…**. En redan uppackad mediakopia fungerar också.
+2. Välj valfritt en **Setup Dynamic Update** i CAB-format för rätt Windows-version och arkitektur. **Utan Setup DU** tar bort valet. Safe OS-paket hör fortfarande till WinRE-kön.
+3. Välj `oscdimg.exe` från **Windows ADK Deployment Tools**. Verktyget letar först på ADK:s standardsökväg. ADK behövs för ISO-bygget, inte för det vanliga WIM-flödet.
+4. Klicka **Skapa ny ISO…** och ange ett nytt filnamn på lokal NTFS-disk. Befintliga ISO-filer skrivs inte över.
+
+Originalmediet kopieras till en unik mapp under arbetsmappens `MediaBuilds`. Den färdigsparade WIM-filen blir `sources\install.wim`; originalets `install.wim`, `install.esd` och delade `install*.swm` utelämnas. ISO:n innehåller därmed endast den Windows-utgåva du bearbetat. Övriga mediafiler behålls, inklusive eventuella svarsfiler: kontrollera att dessa inte hänvisar till andra utgåvor eller gamla index.
+
+Setup DU packas upp till `sources` i mediakopian. Ett normalt servicing-CAB avvisas, men paketets kompatibilitet måste fortfarande kontrolleras mot dess KB-information. Efteråt hämtas `setup.exe` och, från Windows 11 24H2, `setuphost.exe` från `boot.wim` index 2 via en skrivskyddad montering för att hålla Setup-filerna synkroniserade. Detta följer [Microsofts beskrivning av mediauppdatering](https://learn.microsoft.com/windows/deployment/update/media-dynamic-update).
+
+Detta steg bygger om mediet med din patchade installationsimage. Det patchar inte `boot.wim` med CU, lägger inte till WinPE-språk och genererar inte om Setup-språklistor. Det är alltså inte hela Microsofts WinPE/media-refresh-process. Mediet måste ha ett vanligt Windows Setup-index 2 i `boot.wim`, samma arkitektur och samma basbuild som den sparade Windows-imagen. Revisionen efter CU får skilja sig. Välj media som redan har den WinPE- och Setup-språkkonfiguration som behövs.
+
+ISO:n byggs med UDF och mediets egna startfiler: BIOS + UEFI för x64, endast UEFI för ARM64, enligt [Oscdimg-dokumentationen](https://learn.microsoft.com/windows-hardware/manufacture/desktop/oscdimg-command-line-options). En tillfällig ISO-fil byter namn till det valda resultatnamnet först när Oscdimg lyckats. Testa den färdiga ISO:n i en VM, inklusive installation och första inloggning; automatiska tester ersätter inte ett starttest.
+
+Mediakopia, `media.json` och verktygsloggar behålls under `MediaBuilds` för felsökning. Varje försök skapar en ny byggmapp; bygget återupptas inte mitt i en kopiering. Misslyckade `.pmw-*.partial.iso` kan ligga kvar i resultatmappen. Vid ett processavbrott kan en skrivskyddad boot-montering finnas kvar: kontrollera `Get-WindowsImage -Mounted` och avmontera exakt den `BootMount`-sökväg som anges i byggjournalen med `Dismount-WindowsImage -Path '<BootMount-sökvägen>' -Discard` innan byggmappen tas bort. Radera aldrig en monteringsmapp medan den fortfarande används av DISM.
 
 ## Kö, loggar och återupptagning
 
@@ -117,7 +136,7 @@ Export kräver extra ledigt utrymme. Föregående sparade WIM behålls bredvid r
 - Kör på Windows 11 med 64-bitars Windows PowerShell 5.1, .NET Framework/WPF och DISM. Använd en värd/DISM-version som stöder den image-version som ska bearbetas.
 - Uppdateringsfiler hämtas separat. Använd rätt Windows-version, arkitektur och paketberoenden. DISM:s kompatibilitetskontroll kringgås inte.
 - Windows 11 24H2 och senare kan kräva checkpoint-uppdateringar. Hämta även nödvändiga förkrav från Microsoft Update Catalog och installera dem i angiven ordning.
-- Verktyget bearbetar en vald utgåva och dess inbäddade WinRE åt gången. Det bygger inte en startbar ISO och uppdaterar inte automatiskt `boot.wim`, Setup Dynamic Update eller övriga utgåvor. Det hanterar inte delade SWM-filer eller krypterade ESD-filer.
+- Verktyget bearbetar en vald utgåva och dess inbäddade WinRE åt gången. ISO-steget stöder valfri Setup Dynamic Update, men patchar inte `boot.wim` eller övriga utgåvor. Delade SWM-filer och krypterade ESD-filer stöds inte som indata till imagepatchningen.
 - Vissa paket kräver att imagen startas för att slutföra väntande åtgärder. Verktyget startar inte om värddatorn och använder inte DISM `-Online`.
 - En session kan vara aktiv per arbetsmapp. Använd en separat arbetsmapp per operatör; kör inte andra serviceverktyg mot samma montering samtidigt.
 
@@ -126,11 +145,14 @@ Export kräver extra ledigt utrymme. Föregående sparade WIM behålls bredvid r
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1
 powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\PatchMyWindow.ps1 -SmokeTest
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Media-Tests.ps1
 ```
 
 Testerna körs utan extra testbibliotek. De ersätter DISM-kommandon med testdubblar och kontrollerar bland annat filskydd, exportindex, separata Windows/WinRE-mål, paketordning, paketfel, stopp mellan paket, sessionsåterställning, främmande monteringar, sparfel, återkopiering av WinRE och kassering. Avslutningstester kontrollerar cleanup före commit, explicit ResetBase, väntande paket/funktioner/pending.xml, cleanup-fel, exportfel, bevarad WIM och återupptagning efter commit. UI-testet laddar riktig WPF i PowerShell 5.1 och kontrollerar köer, standardinställningar, ResetBase-information och åtgärdernas tillgänglighet under körning och återställning.
 
-**Ingen riktig Windows-image ingår i projektet. Fullständig export, patchning och commit mot en riktig WIM har därför inte verifierats här.** Testa resultatet i en virtuell maskin innan det används för distribution.
+Mediatesterna kontrollerar separata kopior, ersättning av installationsimage, bootargument, Setup DU, avmontering vid fel och att en misslyckad ISO inte publiceras. DISM och Oscdimg ersätts med testdubblar; argumentöverföring och CAB-uppackning provas också med riktiga, ofarliga testfiler.
+
+**Ingen riktig Windows-image ingår i projektet. Fullständig export, patchning och commit mot en riktig WIM eller start från en genererad Windows-ISO har därför inte verifierats här.** Testa resultatet i en virtuell maskin innan det används för distribution.
 
 ## Microsoft-dokumentation
 

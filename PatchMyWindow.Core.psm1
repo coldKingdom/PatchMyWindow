@@ -1,5 +1,6 @@
 ﻿#requires -Version 5.1
 Set-StrictMode -Version 2.0
+. (Join-Path $PSScriptRoot 'PatchMyWindow.Media.ps1')
 
 function Get-PmwFullPath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
@@ -276,6 +277,10 @@ function Invoke-PmwTask {
         $root = Assert-PmwLocalPath $Request.Root
         $s = Read-PmwSession $root
         switch ($Request.Action) {
+            'BuildISO' {
+                if (-not $s -or (Get-PmwStatus $s) -ne 'Saved') { throw 'Spara och avsluta Windows-imagen innan ISO skapas.' }
+                $result.ISO = New-PmwMediaISO $s $root $Request $Events
+            }
             'Inspect' { }
             'ReadImage' {
                 $source = Get-PmwFullPath $Request.Source

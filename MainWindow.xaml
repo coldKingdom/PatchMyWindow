@@ -153,6 +153,21 @@
               <TextBlock x:Name="FinalizationSummary" Style="{StaticResource Muted}" FontSize="12" Margin="0,8,0,0"/>
             </StackPanel>
           </Border>
+          <Border Style="{StaticResource Card}" Margin="0,12,0,4">
+            <StackPanel>
+              <TextBlock Text="04  /  Bygg installationsmedia och ISO" FontSize="17" FontWeight="SemiBold"/>
+              <TextBlock Text="Efter Spara och avmontera: kopiera originalmedia, ersätt install.wim och skapa en startbar ISO med vald Windows-utgåva. Kräver Oscdimg från Windows ADK Deployment Tools." Style="{StaticResource Muted}" Margin="0,8,0,10"/>
+              <Button x:Name="BrowseMedia" Content="Välj originalmedia…" HorizontalAlignment="Left"/>
+              <TextBlock x:Name="MediaPath" Text="Rotmappen på en monterad ISO eller en kopia av installationsmediet" Style="{StaticResource Muted}" Margin="0,5,0,10" TextWrapping="Wrap"/>
+              <StackPanel Orientation="Horizontal"><Button x:Name="BrowseSetupDU" Content="Välj Setup Dynamic Update (.cab)…"/><Button x:Name="ClearSetupDU" Content="Utan Setup DU" Margin="8,0,0,0"/></StackPanel>
+              <TextBlock x:Name="SetupDUPath" Text="Valfritt · Ingen Setup Dynamic Update vald" Style="{StaticResource Muted}" Margin="0,5,0,10" TextWrapping="Wrap"/>
+              <Button x:Name="BrowseOscdimg" Content="Välj oscdimg.exe…" HorizontalAlignment="Left"/>
+              <TextBlock x:Name="OscdimgPath" Style="{StaticResource Muted}" Margin="0,5,0,10" TextWrapping="Wrap"/>
+              <TextBlock Text="Välj matchande Windows-version och arkitektur. Boot.wim och installationsspråken i Setup patchas inte här. Med Setup DU synkroniseras Setup-filerna från boot.wim. Originalmedia behålls." Style="{StaticResource Muted}" Margin="0,0,0,10"/>
+              <Button x:Name="BuildISO" Content="Skapa ny ISO…" Style="{StaticResource Primary}" HorizontalAlignment="Left"/>
+              <TextBlock x:Name="IsoResult" Style="{StaticResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
         </StackPanel>
       </ScrollViewer>
       <Grid Grid.Row="2" Margin="0,15,8,0"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>

@@ -65,6 +65,11 @@ try {
     $script:job = $null
     $script:source = ''
     $script:output = ''
+    $script:mediaSource = ''
+    $script:setupDU = ''
+    $script:oscdimg = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe'
+    if (-not (Test-Path -LiteralPath $script:oscdimg)) { $script:oscdimg = '' }
+    $ui.OscdimgPath.Text = if ($script:oscdimg) { $script:oscdimg } else { 'Oscdimg hittades inte. Installera Windows ADK Deployment Tools eller välj filen.' }
     $script:root = Join-Path $env:LOCALAPPDATA 'PatchMyWindow'
     $script:settingsPath = Join-Path $env:LOCALAPPDATA 'PatchMyWindow\settings.json'
     $script:modulePath = Join-Path $PSScriptRoot 'PatchMyWindow.Core.psm1'
@@ -95,6 +100,8 @@ try {
     function Update-Ui {
         $idle = -not $script:busy
         $editable = $idle -and -not $readOnly
+        foreach ($name in @('BrowseMedia', 'BrowseSetupDU', 'ClearSetupDU', 'BrowseOscdimg')) { $ui[$name].IsEnabled = $editable }
+        $ui.BuildISO.IsEnabled = $editable -and $script:status -eq 'Saved' -and $script:mediaSource.Length -gt 0 -and $script:oscdimg.Length -gt 0
         $active = $script:status -notin @('Empty', 'Saved', 'Discarded')
         $mounted = $script:status -eq 'Mounted'
         $ui.BrowseSource.IsEnabled = $editable -and -not $active
@@ -232,6 +239,7 @@ try {
                 'ApplySafeOS' { 'Installerar Safe OS-paket i WinRE · Vänta medan DISM arbetar …' }
                 'Save' { 'Sparar och avmonterar · Stäng inte av datorn …' }
                 'Discard' { 'Avslutar sessionen …' }
+                'BuildISO' { 'Kopierar media och bygger ISO · Detta kan ta flera minuter …' }
                 default { 'Kontrollerar sessionen …' }
             }
             $ui.StopQueue.Visibility = if ($Action -in @('Apply', 'ApplySafeOS', 'ApplyLP', 'ReapplyCU', 'ProvisionAppBatch')) { 'Visible' } else { 'Collapsed' }
@@ -260,6 +268,11 @@ try {
                 $result = $results[$results.Count - 1]
                 if ($finished.Action -eq 'Prepare' -and $result.Success) { foreach ($item in @($queues.Windows) + @($queues.WinRE) + @($queues.Languages)) { $item.Status = 'Väntar' } }
                 Sync-Session $result
+                if ($finished.Action -eq 'BuildISO' -and $result.Success) {
+                    $ui.IsoResult.Text = 'ISO klar: ' + $result.ISO
+                    $ui.StatusText.Text = 'Klart · Ny startbar ISO skapad'
+                }
+                if ($finished.Action -eq 'BuildISO' -and -not $result.Success) { $ui.IsoResult.Text = 'ISO-bygget misslyckades. Se loggen; den sparade WIM-filen finns kvar.' }
                 if ($finished.Action -eq 'ListApps' -and $result.Success) {
                     $ui.AppsGrid.ItemsSource = @($result.Apps)
                     $ui.AppsHint.Text = '{0} provisionerade paket · läst {1:HH:mm:ss}' -f $result.Apps.Count, (Get-Date)
@@ -284,6 +297,36 @@ try {
         }
     })
 
+    $ui.BrowseMedia.Add_Click({
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = 'Välj roten på monterad ISO eller installationsmedia (mappen som innehåller sources).'
+        try {
+            if ($dialog.ShowDialog() -eq 'OK') { $script:mediaSource = $dialog.SelectedPath; $ui.MediaPath.Text = $script:mediaSource; Update-Ui }
+        } finally { $dialog.Dispose() }
+    })
+    $ui.BrowseSetupDU.Add_Click({
+        $dialog = New-Object Microsoft.Win32.OpenFileDialog
+        $dialog.Title = 'Välj Setup Dynamic Update för samma Windows-version och arkitektur (inte Safe OS)'
+        $dialog.Filter = 'Setup Dynamic Update (*.cab)|*.cab'
+        if ($dialog.ShowDialog($window)) { $script:setupDU = $dialog.FileName; $ui.SetupDUPath.Text = $script:setupDU }
+    })
+    $ui.ClearSetupDU.Add_Click({ $script:setupDU = ''; $ui.SetupDUPath.Text = 'Valfritt · Ingen Setup Dynamic Update vald' })
+    $ui.BrowseOscdimg.Add_Click({
+        $dialog = New-Object Microsoft.Win32.OpenFileDialog
+        $dialog.Filter = 'Windows ADK Oscdimg|oscdimg.exe'
+        if ($dialog.ShowDialog($window)) { $script:oscdimg = $dialog.FileName; $ui.OscdimgPath.Text = $script:oscdimg; Update-Ui }
+    })
+    $ui.BuildISO.Add_Click({
+        $dialog = New-Object Microsoft.Win32.SaveFileDialog
+        $dialog.Title = 'Välj ett nytt filnamn för ISO-resultatet'
+        $dialog.Filter = 'ISO (*.iso)|*.iso'; $dialog.DefaultExt = '.iso'; $dialog.FileName = 'Windows11-patched.iso'
+        if ($dialog.ShowDialog($window)) {
+            if (Confirm-Action "Skapa en ny ISO med den sparade Windows-utgåvan?`n`nOriginalmedia: $script:mediaSource`nWIM: $($script:session.Output)`nSetup DU: $script:setupDU`nISO: $($dialog.FileName)`n`nBoot.wim behålls. Kontrollera att media och Setup DU matchar målversion och arkitektur.") {
+                $ui.IsoResult.Text = 'ISO-bygge pågår …'
+                Start-Task 'BuildISO' @{ MediaSource = $script:mediaSource; SetupDU = $script:setupDU; Oscdimg = $script:oscdimg; IsoPath = $dialog.FileName }
+            }
+        }
+    })
     $ui.BrowseSource.Add_Click({
         try {
             $dialog = New-Object Microsoft.Win32.OpenFileDialog
@@ -455,15 +498,19 @@ try {
         $required = @('SourcePath','Edition','Prepare','Apply','Save','Discard','Log','Progress','StopQueue')
         foreach ($name in $required) { if (-not $ui[$name]) { throw "Saknad kontroll: $name" } }
         if ($ui.Prepare.IsEnabled -or $ui.Apply.IsEnabled -or $ui.Save.IsEnabled) { throw 'En ändringsåtgärd är aktiv i skrivskyddad förhandsvisning.' }
+        if ($ui.BuildISO.IsEnabled -or $ui.BrowseMedia.IsEnabled) { throw 'ISO-åtgärder är aktiva i förhandsvisning.' }
         if ($ui.CleanupMode.SelectedIndex -ne 1 -or -not $ui.OptimizeWim.IsChecked -or $ui.CleanupMode.IsEnabled) { throw 'Fel standardinställningar för avslutning.' }
         $script:readOnly = $false
         $script:status = 'Mounted'
+        $script:mediaSource = 'C:\fixture-media'; $script:oscdimg = 'C:\fixture\oscdimg.exe'
         $appQueue.Add([pscustomobject]@{ Path = 'fixture.appx'; LicensePath = 'license.xml'; SkipLicense = $false; Dependencies = @(); Status = 'Väntar' })
         $queue.Add([pscustomobject]@{ Path = 'fixture.msu'; Name = 'fixture.msu'; Size = '1 MB'; Status = 'Väntar' })
         Update-Ui
+        if ($ui.BuildISO.IsEnabled) { throw 'ISO tillåts innan imagen sparats.' }
         if (-not $ui.RunAppQueue.IsEnabled -or -not $ui.RemoveQueuedApp.IsEnabled) { throw 'Appkön kan inte köras eller redigeras för monterad image.' }
         if (-not $ui.Apply.IsEnabled -or -not $ui.Save.IsEnabled -or $ui.BrowseSource.IsEnabled) { throw 'Felaktiga åtgärder för monterad image.' }
         $script:busy = $true; Update-Ui
+        if ($ui.BrowseMedia.IsEnabled -or $ui.BrowseSetupDU.IsEnabled -or $ui.BuildISO.IsEnabled) { throw 'ISO-inställningar kan ändras under körning.' }
         if ($ui.RunAppQueue.IsEnabled -or $ui.RemoveQueuedApp.IsEnabled -or $ui.ProvisionApp.IsEnabled) { throw 'Appkön kan ändras under körning.' }
         if ($ui.Apply.IsEnabled -or $ui.Save.IsEnabled -or $ui.Discard.IsEnabled -or $ui.AddPackages.IsEnabled) { throw 'Ändringar tillåts under pågående körning.' }
         if ($ui.PackageTarget.IsEnabled) { throw 'Målbyte tillåts under pågående körning.' }
@@ -487,6 +534,9 @@ try {
         if (-not $ui.Save.IsEnabled -or $ui.Discard.IsEnabled -or $ui.CleanupMode.IsEnabled -or -not $ui.OptimizeWim.IsEnabled) { throw 'Felaktiga åtgärder vid avbruten kompaktering.' }
         $ui.CleanupMode.SelectedIndex = 1
         $appQueue.Clear()
+        $script:status = 'Saved'; Update-Ui
+        if (-not $ui.BuildISO.IsEnabled) { throw 'ISO kan inte byggas från sparad image.' }
+        $script:mediaSource = ''; $script:oscdimg = ''
         $script:status = 'Empty'; $script:readOnly = $true; $queues.Windows.Clear(); $queues.WinRE.Clear(); Update-Ui
         $window.Show()
         $window.UpdateLayout()
